@@ -1,5 +1,6 @@
 const LOADED_SPRITE_PATHS = new Set<string>();
 const LOADING_SPRITE_TASKS = new Map<string, Promise<boolean>>();
+const LOADED_SPRITE_IMAGES = new Map<string, HTMLImageElement>();
 
 const loadSpritePath = (path: string): Promise<boolean> => {
   const existingTask = LOADING_SPRITE_TASKS.get(path);
@@ -15,6 +16,7 @@ const loadSpritePath = (path: string): Promise<boolean> => {
       settled = true;
       if (ok) {
         LOADED_SPRITE_PATHS.add(path);
+        LOADED_SPRITE_IMAGES.set(path, image);
       }
       LOADING_SPRITE_TASKS.delete(path);
       resolve(ok);
@@ -41,6 +43,7 @@ const loadSpritePath = (path: string): Promise<boolean> => {
 };
 
 export const isSpritePathLoaded = (path: string) => LOADED_SPRITE_PATHS.has(path);
+export const getLoadedSpriteImage = (path: string) => LOADED_SPRITE_IMAGES.get(path) ?? null;
 
 export const ensureSpritePathLoaded = (path: string): Promise<boolean> => {
   if (!path) return Promise.resolve(false);
