@@ -70,9 +70,7 @@ export function SpriteActor({
   ariaLabel,
 }: SpriteActorProps) {
   const targetConfig = getPetSpriteConfigByKey(spriteKey, action);
-  const [resolvedConfig, setResolvedConfig] = useState(() => (
-    targetConfig && LOADED_SPRITE_PATHS.has(targetConfig.path) ? targetConfig : null
-  ));
+  const [resolvedConfig, setResolvedConfig] = useState(() => targetConfig ?? null);
   const config =
     targetConfig && LOADED_SPRITE_PATHS.has(targetConfig.path)
       ? targetConfig
