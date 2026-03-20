@@ -10,6 +10,7 @@ import {
   type PetSpriteAction,
 } from '../data/petSprites';
 import {SpriteActor} from './SpriteActor';
+import {ensureSpritePathLoaded, preloadSpritePaths} from '../utils/spriteAssetLoader';
 import {
   SCENE_BOTTOM_MAX,
   SCENE_BOTTOM_MIN,
@@ -34,8 +35,6 @@ interface SpritePetInstanceProps {
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const SPRITE_ACTIONS: PetSpriteAction[] = ['idle', 'move', 'feed', 'happy'];
-const PRELOADED_SPRITE_PATHS = new Set<string>();
-const PRELOADING_SPRITE_TASKS = new Map<string, Promise<void>>();
 const getLayerZIndex = (y: number) => 100 + Math.round(y * 10);
 const SHOW_SCENE_MOVE_BOUNDS = true;
 const SPECIES_SIZE_FACTOR: Record<string, number> = {
@@ -56,40 +55,6 @@ const hashToUnit = (input: string) => {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) / 4294967295;
-};
-
-const preloadSpritePath = (path: string) => {
-  if (!path) return Promise.resolve();
-  if (PRELOADED_SPRITE_PATHS.has(path)) return Promise.resolve();
-  const existingTask = PRELOADING_SPRITE_TASKS.get(path);
-  if (existingTask) return existingTask;
-
-  const task = new Promise<void>((resolve) => {
-    const image = new Image();
-    image.decoding = 'async';
-
-    const markReady = () => {
-      PRELOADED_SPRITE_PATHS.add(path);
-      PRELOADING_SPRITE_TASKS.delete(path);
-      resolve();
-    };
-
-    image.onload = () => {
-      if (typeof image.decode === 'function') {
-        image.decode().catch(() => undefined).finally(markReady);
-        return;
-      }
-      markReady();
-    };
-    image.onerror = () => {
-      PRELOADING_SPRITE_TASKS.delete(path);
-      resolve();
-    };
-    image.src = path;
-  });
-
-  PRELOADING_SPRITE_TASKS.set(path, task);
-  return task;
 };
 
 const BasicPetInstance: React.FC<BasicPetInstanceProps> = ({pet, mini, theme, children}) => {
@@ -231,7 +196,7 @@ const SpritePetInstance: React.FC<SpritePetInstanceProps> = ({pet, mini, onMove,
     availableActions.forEach((action) => {
       const config = getPetSpriteConfigByKey(pet.petId, action);
       if (config?.path) {
-        preloadSpritePath(config.path);
+        ensureSpritePathLoaded(config.path);
       }
     });
   }, [availableActions, pet.petId]);
@@ -783,7 +748,7 @@ export function PetScene({mini = false}: {mini?: boolean}) {
   const {currentTheme, completedPets, customPets, syncPetData, updatePetPosition} = useStore();
   const sceneRef = useRef<HTMLDivElement | null>(null);
   const [sceneSize, setSceneSize] = useState({width: 0, height: 0});
-  const [spriteAssetsReady, setSpriteAssetsReady] = useState(true);
+  const [spriteAssetsReady, setSpriteAssetsReady] = useState(false);
 
   useEffect(() => {
     syncPetData();
@@ -853,8 +818,7 @@ export function PetScene({mini = false}: {mini?: boolean}) {
       };
     }
 
-    setSpriteAssetsReady(false);
-    Promise.all(Array.from(paths).map((path) => preloadSpritePath(path))).then(() => {
+    preloadSpritePaths(Array.from(paths)).then(() => {
       if (cancelled) return;
       setSpriteAssetsReady(true);
     });
