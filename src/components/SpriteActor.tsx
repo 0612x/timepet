@@ -1,7 +1,7 @@
 import React, {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {getPetSpriteConfigByKey, type PetSpriteAction} from '../data/petSprites';
 import {cn} from '../utils/cn';
-import {ensureSpritePathLoaded, isSpritePathLoaded} from '../utils/spriteAssetLoader';
+import {ensureSpritePathLoaded, getLoadedSpriteImage, isSpritePathLoaded} from '../utils/spriteAssetLoader';
 
 interface SpriteActorProps {
   spriteKey: string;
@@ -13,8 +13,8 @@ interface SpriteActorProps {
   ariaLabel?: string;
 }
 
-const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 type SpriteConfig = NonNullable<ReturnType<typeof getPetSpriteConfigByKey>>;
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 const ACTION_TIMING_PROFILE: Record<
   PetSpriteAction,
@@ -25,8 +25,6 @@ const ACTION_TIMING_PROFILE: Record<
   feed: {targetLoopMs: 1180, minFps: 1.9, maxFps: 6.8},
   happy: {targetLoopMs: 940, minFps: 2.6, maxFps: 8.2},
 };
-const BLEND_OUT_MS = 20;
-const ENABLE_BLEND = false;
 
 export function SpriteActor({
   spriteKey,
@@ -42,6 +40,7 @@ export function SpriteActor({
     if (!targetConfig) return null;
     return isSpritePathLoaded(targetConfig.path) ? targetConfig : null;
   });
+
   const config =
     targetConfig && isSpritePathLoaded(targetConfig.path)
       ? targetConfig
@@ -53,11 +52,7 @@ export function SpriteActor({
     frameCount: config?.frameCount ?? 1,
   });
   const previousSeedRef = useRef(seed);
-  const lastVisualRef = useRef<{config: SpriteConfig; frameIndex: number} | null>(null);
-  const blendTimerRef = useRef<number | null>(null);
-  const blendRafRef = useRef<number | null>(null);
-  const [blendOverlay, setBlendOverlay] = useState<{config: SpriteConfig; frameIndex: number} | null>(null);
-  const [blendOverlayOpacity, setBlendOverlayOpacity] = useState(0);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,8 +71,7 @@ export function SpriteActor({
     }
 
     ensureSpritePathLoaded(targetConfig.path).then((loaded) => {
-      if (cancelled) return;
-      if (!loaded) return;
+      if (cancelled || !loaded) return;
       setResolvedConfig((previous) => (previous?.path === targetConfig.path ? previous : targetConfig));
     });
 
@@ -85,18 +79,6 @@ export function SpriteActor({
       cancelled = true;
     };
   }, [targetConfig]);
-
-  const effectiveFps = useMemo(() => {
-    if (!config) return 0;
-    const profile = ACTION_TIMING_PROFILE[action];
-    const targetFps = config.frameCount / (profile.targetLoopMs / 1000);
-    return clamp(targetFps, profile.minFps, profile.maxFps);
-  }, [action, config]);
-
-  const frames = useMemo(() => {
-    if (!config) return [];
-    return Array.from({length: config.frameCount}, (_, index) => index);
-  }, [config]);
 
   useLayoutEffect(() => {
     if (!config) {
@@ -112,10 +94,7 @@ export function SpriteActor({
 
     setFrameIndex((previous) => {
       if (isSeedChanged) return 0;
-
-      if (!isPathChanged) {
-        return clamp(previous, 0, Math.max(config.frameCount - 1, 0));
-      }
+      if (!isPathChanged) return clamp(previous, 0, Math.max(config.frameCount - 1, 0));
 
       const previousMax = Math.max(previousMeta.frameCount - 1, 1);
       const progress = clamp(previous / previousMax, 0, 1);
@@ -129,58 +108,28 @@ export function SpriteActor({
     };
   }, [config?.path, config?.frameCount, seed, spriteKey]);
 
-  useLayoutEffect(() => {
-    if (!ENABLE_BLEND) {
-      setBlendOverlay(null);
-      setBlendOverlayOpacity(0);
-      return;
-    }
+  const renderWidth = useMemo(
+    () => Math.max(1, Math.round((config?.frameWidth ?? 32) * scale)),
+    [config?.frameWidth, scale],
+  );
+  const renderHeight = useMemo(
+    () => Math.max(1, Math.round((config?.frameHeight ?? 32) * scale)),
+    [config?.frameHeight, scale],
+  );
 
-    if (!config) {
-      setBlendOverlay(null);
-      setBlendOverlayOpacity(0);
-      return;
-    }
-
-    const previousVisual = lastVisualRef.current;
-    if (!previousVisual || previousVisual.config.path === config.path) {
-      setBlendOverlay(null);
-      setBlendOverlayOpacity(0);
-      return;
-    }
-    if (!isSpritePathLoaded(previousVisual.config.path) || !isSpritePathLoaded(config.path)) {
-      setBlendOverlay(null);
-      setBlendOverlayOpacity(0);
-      return;
-    }
-
-    if (blendTimerRef.current) {
-      window.clearTimeout(blendTimerRef.current);
-      blendTimerRef.current = null;
-    }
-    if (blendRafRef.current) {
-      window.cancelAnimationFrame(blendRafRef.current);
-      blendRafRef.current = null;
-    }
-
-    setBlendOverlay(previousVisual);
-    setBlendOverlayOpacity(1);
-    blendRafRef.current = window.requestAnimationFrame(() => {
-      setBlendOverlayOpacity(0);
-    });
-    blendTimerRef.current = window.setTimeout(() => {
-      setBlendOverlay(null);
-      setBlendOverlayOpacity(0);
-      blendTimerRef.current = null;
-    }, BLEND_OUT_MS);
-  }, [config?.path]);
+  const effectiveFps = useMemo(() => {
+    if (!config) return 0;
+    const profile = ACTION_TIMING_PROFILE[action];
+    const targetFps = config.frameCount / (profile.targetLoopMs / 1000);
+    return clamp(targetFps, profile.minFps, profile.maxFps);
+  }, [action, config]);
 
   useEffect(() => {
-    if (!config || frames.length <= 1 || effectiveFps <= 0) return;
+    if (!config || config.frameCount <= 1 || effectiveFps <= 0) return;
 
     const timer = window.setInterval(() => {
       setFrameIndex((previous) => {
-        if (previous >= frames.length - 1) {
+        if (previous >= config.frameCount - 1) {
           return config.loop ? 0 : previous;
         }
         return previous + 1;
@@ -188,120 +137,80 @@ export function SpriteActor({
     }, 1000 / effectiveFps);
 
     return () => window.clearInterval(timer);
-  }, [config, effectiveFps, frames.length, seed]);
+  }, [config, effectiveFps, seed]);
 
-  const safeFrameIndex = Math.min(frameIndex, Math.max(frames.length - 1, 0));
-  const currentFrame = frames[safeFrameIndex] ?? 0;
+  const safeFrameIndex = clamp(frameIndex, 0, Math.max((config?.frameCount ?? 1) - 1, 0));
+  const frameWidth = Math.max(1, config?.frameWidth ?? 1);
+  const frameHeight = Math.max(1, config?.frameHeight ?? 1);
 
-  useEffect(() => {
-    if (!config) return;
-    lastVisualRef.current = {
-      config,
-      frameIndex: currentFrame,
-    };
-  }, [config, currentFrame]);
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !config) return;
 
-  useEffect(() => {
-    return () => {
-      if (blendTimerRef.current) window.clearTimeout(blendTimerRef.current);
-      if (blendRafRef.current) window.cancelAnimationFrame(blendRafRef.current);
-    };
-  }, []);
+    const image = getLoadedSpriteImage(config.path);
+    if (!image) return;
+
+    if (canvas.width !== renderWidth) canvas.width = renderWidth;
+    if (canvas.height !== renderHeight) canvas.height = renderHeight;
+
+    const context = canvas.getContext('2d');
+    if (!context) return;
+
+    context.clearRect(0, 0, renderWidth, renderHeight);
+    context.imageSmoothingEnabled = false;
+
+    const columnIndex = safeFrameIndex % config.columns;
+    const rowIndex = Math.floor(safeFrameIndex / config.columns);
+    const sourceX = columnIndex * frameWidth;
+    const sourceY = rowIndex * frameHeight;
+
+    if (flipX) {
+      context.save();
+      context.translate(renderWidth, 0);
+      context.scale(-1, 1);
+      context.drawImage(image, sourceX, sourceY, frameWidth, frameHeight, 0, 0, renderWidth, renderHeight);
+      context.restore();
+      return;
+    }
+
+    context.drawImage(image, sourceX, sourceY, frameWidth, frameHeight, 0, 0, renderWidth, renderHeight);
+  }, [
+    config,
+    flipX,
+    frameHeight,
+    frameWidth,
+    renderHeight,
+    renderWidth,
+    safeFrameIndex,
+  ]);
 
   if (!config) return null;
-
-  const getFrameStyle = (target: SpriteConfig, frame: number, opacity = 1) => {
-    const frameWidth = Math.max(1, Number((target.frameWidth * scale).toFixed(2)));
-    const frameHeight = Math.max(1, Number((target.frameHeight * scale).toFixed(2)));
-    const columnIndex = frame % target.columns;
-    const rowIndex = Math.floor(frame / target.columns);
-    const offsetX = Number((columnIndex * frameWidth).toFixed(2));
-    const offsetY = Number((rowIndex * frameHeight).toFixed(2));
-    const sheetWidth = Number((target.columns * frameWidth).toFixed(2));
-    const sheetHeight = Number((target.rows * frameHeight).toFixed(2));
-
-    return {
-      width: frameWidth,
-      height: frameHeight,
-      left: -offsetX,
-      top: -offsetY,
-      sheetWidth,
-      sheetHeight,
-      opacity,
-      transition: blendOverlay && ENABLE_BLEND ? `opacity ${BLEND_OUT_MS}ms linear` : undefined,
-    };
-  };
-
-  const currentStyle = getFrameStyle(config, currentFrame, 1);
-  const overlayStyle = blendOverlay && ENABLE_BLEND
-    ? getFrameStyle(blendOverlay.config, blendOverlay.frameIndex, blendOverlayOpacity)
-    : null;
 
   return (
     <div
       role="img"
       aria-label={ariaLabel}
-      className={cn('relative overflow-hidden [image-rendering:pixelated]', className)}
+      className={cn('relative overflow-hidden', className)}
       style={{
-        width: `${currentStyle.width}px`,
-        height: `${currentStyle.height}px`,
-        transform: `${flipX ? 'scaleX(-1) ' : ''}translateZ(0)`,
-        transformOrigin: 'center',
-        willChange: 'transform',
+        width: `${renderWidth}px`,
+        height: `${renderHeight}px`,
+        transform: 'translateZ(0)',
         backfaceVisibility: 'hidden',
         WebkitBackfaceVisibility: 'hidden',
         contain: 'layout paint size',
-      }}>
-      <div
-        className="absolute inset-0 overflow-hidden"
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        width={renderWidth}
+        height={renderHeight}
+        className="block h-full w-full [image-rendering:pixelated]"
         style={{
-          opacity: currentStyle.opacity,
-          transition: currentStyle.transition,
-        }}>
-        <img
-          src={config.path}
-          alt=""
-          draggable={false}
-          className="pointer-events-none absolute select-none"
-          style={{
-            left: `${currentStyle.left}px`,
-            top: `${currentStyle.top}px`,
-            width: `${currentStyle.sheetWidth}px`,
-            height: `${currentStyle.sheetHeight}px`,
-            imageRendering: 'pixelated',
-            maxWidth: 'none',
-            transform: 'translateZ(0)',
-            backfaceVisibility: 'hidden',
-            WebkitBackfaceVisibility: 'hidden',
-          }}
-        />
-      </div>
-      {overlayStyle && (
-        <div
-          className="absolute inset-0 overflow-hidden pointer-events-none"
-          style={{
-            opacity: overlayStyle.opacity,
-            transition: overlayStyle.transition,
-          }}>
-          <img
-            src={blendOverlay?.config.path}
-            alt=""
-            draggable={false}
-            className="pointer-events-none absolute select-none"
-            style={{
-              left: `${overlayStyle.left}px`,
-              top: `${overlayStyle.top}px`,
-              width: `${overlayStyle.sheetWidth}px`,
-              height: `${overlayStyle.sheetHeight}px`,
-              imageRendering: 'pixelated',
-              maxWidth: 'none',
-              transform: 'translateZ(0)',
-              backfaceVisibility: 'hidden',
-              WebkitBackfaceVisibility: 'hidden',
-            }}
-          />
-        </div>
-      )}
+          transform: 'translateZ(0)',
+          backfaceVisibility: 'hidden',
+          WebkitBackfaceVisibility: 'hidden',
+        }}
+      />
     </div>
   );
 }
