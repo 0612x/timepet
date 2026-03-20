@@ -25,7 +25,8 @@ const ACTION_TIMING_PROFILE: Record<
   feed: {targetLoopMs: 1180, minFps: 1.9, maxFps: 6.8},
   happy: {targetLoopMs: 940, minFps: 2.6, maxFps: 8.2},
 };
-const BLEND_OUT_MS = 24;
+const BLEND_OUT_MS = 20;
+const ENABLE_BLEND = false;
 
 export function SpriteActor({
   spriteKey,
@@ -129,6 +130,12 @@ export function SpriteActor({
   }, [config?.path, config?.frameCount, seed, spriteKey]);
 
   useLayoutEffect(() => {
+    if (!ENABLE_BLEND) {
+      setBlendOverlay(null);
+      setBlendOverlayOpacity(0);
+      return;
+    }
+
     if (!config) {
       setBlendOverlay(null);
       setBlendOverlayOpacity(0);
@@ -204,27 +211,31 @@ export function SpriteActor({
   if (!config) return null;
 
   const getFrameStyle = (target: SpriteConfig, frame: number, opacity = 1) => {
-    const frameWidth = Math.max(1, Math.round(target.frameWidth * scale));
-    const frameHeight = Math.max(1, Math.round(target.frameHeight * scale));
+    const frameWidth = Math.max(1, Number((target.frameWidth * scale).toFixed(2)));
+    const frameHeight = Math.max(1, Number((target.frameHeight * scale).toFixed(2)));
     const columnIndex = frame % target.columns;
     const rowIndex = Math.floor(frame / target.columns);
+    const offsetX = Number((columnIndex * frameWidth).toFixed(2));
+    const offsetY = Number((rowIndex * frameHeight).toFixed(2));
+    const sheetWidth = Number((target.columns * frameWidth).toFixed(2));
+    const sheetHeight = Number((target.rows * frameHeight).toFixed(2));
 
     return {
-      width: `${frameWidth}px`,
-      height: `${frameHeight}px`,
-      backgroundImage: `url(${target.path})`,
-      backgroundPosition: `-${columnIndex * frameWidth}px -${rowIndex * frameHeight}px`,
-      backgroundSize: `${target.columns * frameWidth}px ${target.rows * frameHeight}px`,
-      transform: flipX ? 'scaleX(-1)' : undefined,
-      transformOrigin: 'center',
+      width: frameWidth,
+      height: frameHeight,
+      left: -offsetX,
+      top: -offsetY,
+      sheetWidth,
+      sheetHeight,
       opacity,
-      transition: blendOverlay ? `opacity ${BLEND_OUT_MS}ms linear` : undefined,
-      willChange: 'transform, opacity',
+      transition: blendOverlay && ENABLE_BLEND ? `opacity ${BLEND_OUT_MS}ms linear` : undefined,
     };
   };
 
   const currentStyle = getFrameStyle(config, currentFrame, 1);
-  const overlayStyle = blendOverlay ? getFrameStyle(blendOverlay.config, blendOverlay.frameIndex, blendOverlayOpacity) : null;
+  const overlayStyle = blendOverlay && ENABLE_BLEND
+    ? getFrameStyle(blendOverlay.config, blendOverlay.frameIndex, blendOverlayOpacity)
+    : null;
 
   return (
     <div
@@ -232,12 +243,64 @@ export function SpriteActor({
       aria-label={ariaLabel}
       className={cn('relative overflow-hidden [image-rendering:pixelated]', className)}
       style={{
-        width: currentStyle.width,
-        height: currentStyle.height,
+        width: `${currentStyle.width}px`,
+        height: `${currentStyle.height}px`,
+        transform: `${flipX ? 'scaleX(-1) ' : ''}translateZ(0)`,
+        transformOrigin: 'center',
+        willChange: 'transform',
+        backfaceVisibility: 'hidden',
+        WebkitBackfaceVisibility: 'hidden',
+        contain: 'layout paint size',
       }}>
-      <div className="absolute inset-0 overflow-hidden bg-no-repeat [image-rendering:pixelated]" style={currentStyle} />
+      <div
+        className="absolute inset-0 overflow-hidden"
+        style={{
+          opacity: currentStyle.opacity,
+          transition: currentStyle.transition,
+        }}>
+        <img
+          src={config.path}
+          alt=""
+          draggable={false}
+          className="pointer-events-none absolute select-none"
+          style={{
+            left: `${currentStyle.left}px`,
+            top: `${currentStyle.top}px`,
+            width: `${currentStyle.sheetWidth}px`,
+            height: `${currentStyle.sheetHeight}px`,
+            imageRendering: 'pixelated',
+            maxWidth: 'none',
+            transform: 'translateZ(0)',
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+          }}
+        />
+      </div>
       {overlayStyle && (
-        <div className="absolute inset-0 overflow-hidden bg-no-repeat [image-rendering:pixelated] pointer-events-none" style={overlayStyle} />
+        <div
+          className="absolute inset-0 overflow-hidden pointer-events-none"
+          style={{
+            opacity: overlayStyle.opacity,
+            transition: overlayStyle.transition,
+          }}>
+          <img
+            src={blendOverlay?.config.path}
+            alt=""
+            draggable={false}
+            className="pointer-events-none absolute select-none"
+            style={{
+              left: `${overlayStyle.left}px`,
+              top: `${overlayStyle.top}px`,
+              width: `${overlayStyle.sheetWidth}px`,
+              height: `${overlayStyle.sheetHeight}px`,
+              imageRendering: 'pixelated',
+              maxWidth: 'none',
+              transform: 'translateZ(0)',
+              backfaceVisibility: 'hidden',
+              WebkitBackfaceVisibility: 'hidden',
+            }}
+          />
+        </div>
       )}
     </div>
   );
