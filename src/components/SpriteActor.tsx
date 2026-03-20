@@ -1,6 +1,7 @@
 import React, {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {getPetSpriteConfigByKey, type PetSpriteAction} from '../data/petSprites';
 import {cn} from '../utils/cn';
+import {ensureSpritePathLoaded, isSpritePathLoaded} from '../utils/spriteAssetLoader';
 
 interface SpriteActorProps {
   spriteKey: string;
@@ -24,41 +25,7 @@ const ACTION_TIMING_PROFILE: Record<
   feed: {targetLoopMs: 1180, minFps: 1.9, maxFps: 6.8},
   happy: {targetLoopMs: 940, minFps: 2.6, maxFps: 8.2},
 };
-const BLEND_OUT_MS = 48;
-
-const LOADED_SPRITE_PATHS = new Set<string>();
-const LOADING_SPRITE_PATH_TASKS = new Map<string, Promise<void>>();
-
-const ensureSpritePathLoaded = (path: string) => {
-  if (!path) return Promise.resolve();
-  if (LOADED_SPRITE_PATHS.has(path)) return Promise.resolve();
-  const existingTask = LOADING_SPRITE_PATH_TASKS.get(path);
-  if (existingTask) return existingTask;
-
-  const task = new Promise<void>((resolve) => {
-    const image = new Image();
-    image.decoding = 'async';
-    const markAsLoaded = () => {
-      LOADED_SPRITE_PATHS.add(path);
-      LOADING_SPRITE_PATH_TASKS.delete(path);
-      resolve();
-    };
-    image.onload = () => {
-      if (typeof image.decode === 'function') {
-        image.decode().catch(() => undefined).finally(markAsLoaded);
-        return;
-      }
-      markAsLoaded();
-    };
-    image.onerror = () => {
-      LOADING_SPRITE_PATH_TASKS.delete(path);
-      resolve();
-    };
-    image.src = path;
-  });
-  LOADING_SPRITE_PATH_TASKS.set(path, task);
-  return task;
-};
+const BLEND_OUT_MS = 24;
 
 export function SpriteActor({
   spriteKey,
@@ -70,9 +37,12 @@ export function SpriteActor({
   ariaLabel,
 }: SpriteActorProps) {
   const targetConfig = getPetSpriteConfigByKey(spriteKey, action);
-  const [resolvedConfig, setResolvedConfig] = useState(() => targetConfig ?? null);
+  const [resolvedConfig, setResolvedConfig] = useState<SpriteConfig | null>(() => {
+    if (!targetConfig) return null;
+    return isSpritePathLoaded(targetConfig.path) ? targetConfig : null;
+  });
   const config =
-    targetConfig && LOADED_SPRITE_PATHS.has(targetConfig.path)
+    targetConfig && isSpritePathLoaded(targetConfig.path)
       ? targetConfig
       : resolvedConfig;
 
@@ -97,16 +67,17 @@ export function SpriteActor({
       };
     }
 
-    if (LOADED_SPRITE_PATHS.has(targetConfig.path)) {
-      setResolvedConfig((previous) => (previous === targetConfig ? previous : targetConfig));
+    if (isSpritePathLoaded(targetConfig.path)) {
+      setResolvedConfig((previous) => (previous?.path === targetConfig.path ? previous : targetConfig));
       return () => {
         cancelled = true;
       };
     }
 
-    ensureSpritePathLoaded(targetConfig.path).then(() => {
+    ensureSpritePathLoaded(targetConfig.path).then((loaded) => {
       if (cancelled) return;
-      setResolvedConfig((previous) => (previous === targetConfig ? previous : targetConfig));
+      if (!loaded) return;
+      setResolvedConfig((previous) => (previous?.path === targetConfig.path ? previous : targetConfig));
     });
 
     return () => {
@@ -166,6 +137,11 @@ export function SpriteActor({
 
     const previousVisual = lastVisualRef.current;
     if (!previousVisual || previousVisual.config.path === config.path) {
+      setBlendOverlay(null);
+      setBlendOverlayOpacity(0);
+      return;
+    }
+    if (!isSpritePathLoaded(previousVisual.config.path) || !isSpritePathLoaded(config.path)) {
       setBlendOverlay(null);
       setBlendOverlayOpacity(0);
       return;
